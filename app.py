@@ -503,24 +503,27 @@ def main():
     st.markdown("---")
     st.markdown("### 📍 Puntos de Interés")
     
+    st.markdown("---")
+    st.markdown("### 📍 Puntos de Interés")
+    
     puntos = [
-        (4.7110, -74.0721, "Centro"),
-        (4.6600, -74.0900, "Sur"),
-        (4.7700, -74.0500, "Norte"),
-        (4.7200, -74.1400, "Occidente"),
-        (4.7000, -74.0100, "Oriente"),
-        (4.6700, -74.1000, "Bosa"),
-        (4.7500, -74.0300, "Usaquén"),
-        (4.6300, -74.0700, "Usme"),
-        (4.6900, -74.1200, "Kennedy"),
-        (4.7900, -74.0400, "Suba"),
+        (4.7115, -74.0715, "Centro"),   # Movido 50 metros aprox.
+        (4.6605, -74.0895, "Sur"),      # Movido
+        (4.7705, -74.0495, "Norte"),    # Movido
+        (4.7205, -74.1395, "Occidente"),# Movido
+        (4.7005, -74.0105, "Oriente"),  # Movido
+        (4.6705, -74.0995, "Bosa"),     # Movido
+        (4.7505, -74.0305, "Usaquén"),  # Movido
+        (4.6305, -74.0695, "Usme"),     # Movido
+        (4.6905, -74.1195, "Kennedy"),  # Movido
+        (4.7905, -74.0405, "Suba"),     # Movido
     ]
     
     data = []
     for lat, lon, nombre in puntos:
         potencia = cobertura.calcular_intensidad_senal(lat, lon, clima)
         color, calidad, _ = cobertura.obtener_color_cobertura(potencia)
-        emoji = {'green': '🟢', 'yellow': '🟡', 'red': '🔴', 'gray': '⬛'}[color]
+        emoji = {'green': '🟢', 'yellow': '🟡', 'red': '🔴', 'gray': '⬜'}[color]
         data.append({
             'Ubicación': f"{emoji} {nombre}",
             'Potencia (dBm)': f"{potencia:.1f}",
