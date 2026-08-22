@@ -403,7 +403,9 @@ def main():
         st.markdown("---")
         st.markdown("**👥 Grupo No. 7**")
         st.markdown("NEXUS SDR-LINK")
-        st.markdown("Líder: Daniel Felipe Escobar R.")
+        st.markdown("Líder: Daniel Felipe Escobar Ramirez.")
+        st.markdown("👤 Integrante 1: [Daniel Andres Jara Olivera]")
+        st.markdown("👤 Integrante 2: [Diana Carolina Leon Ocampo]")
     
     # ============================================
     # MAPA Y ESTADÍSTICAS
