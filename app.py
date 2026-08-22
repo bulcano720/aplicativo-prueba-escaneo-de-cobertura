@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-NEXUS SDR-LINK - VERSIÓN CORREGIDA
+NEXUS SDR-LINK - VERSIÓN DE EMERGENCIA Y ZONAS MUERTAS
 Sistema de análisis de cobertura y modulación QPSK
 Para zonas de sombra urbana en Bogotá
 """
@@ -9,11 +9,10 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 import folium
-from folium import plugins
 from streamlit_folium import st_folium
 import pandas as pd
 from datetime import datetime
-import random
+import math
 
 # Configurar página
 st.set_page_config(
@@ -24,18 +23,16 @@ st.set_page_config(
 )
 
 # ============================================
-# CLASE DE COBERTURA - CORREGIDA
+# CLASE DE COBERTURA (CON OBSTÁCULOS Y ZONAS MUERTAS)
 # ============================================
-
 class CoberturaBogota:
     def __init__(self):
-        # Centro de Bogotá
         self.lat_center = 4.7110
         self.lon_center = -74.0721
         
-        # Torres base - CON POTENCIA SUFICIENTE
+        # Torres base
         self.torres = [
-            (4.7110, -74.0721, 50),   # Centro - Torre principal
+            (4.7110, -74.0721, 50),   # Centro
             (4.6600, -74.0900, 45),   # Sur
             (4.7700, -74.0500, 48),   # Norte
             (4.7200, -74.1400, 42),   # Occidente
@@ -47,24 +44,37 @@ class CoberturaBogota:
             (4.7900, -74.0400, 39),   # Suba
         ]
         
-        # Factores climáticos - MUY REDUCIDOS
+        # ==========================================
+        # 🏢 OBSTÁCULOS URBANOS (Edificios que bloquean señal)
+        # Crea zonas muertas para simular escenarios de emergencia
+        # ==========================================
+        self.obstaculos = [
+            # (lat, lon, radio_en_metros, altura_del_edificio)
+            # Mientras más alto (altura), más zona muerta genera
+            (4.7100, -74.0800, 500, 80),   # Centro financiero
+            (4.6800, -74.0800, 600, 100),  # Zona Industrial
+            (4.7500, -74.0600, 700, 90),   # Norte (Chicó)
+            (4.6700, -74.1100, 550, 85),   # Kennedy
+            (4.7300, -74.0900, 650, 95),   # Salitre
+            (4.6500, -74.0500, 500, 75),   # Usme
+            (4.7000, -74.0300, 600, 88),   # Chapinero
+        ]
+        
         self.clima = {
-            'despejado': 0.1,
-            'lluvia': 0.8,
-            'niebla': 0.5,
-            'tormenta': 1.5
+            'despejado': 0.0,
+            'lluvia': 12,
+            'niebla': 6,
+            'tormenta': 22
         }
         
-        # Umbrales para colores
         self.umbrales = {
-            'excelente': -55,  # Verde
-            'media': -75,      # Amarillo
-            'mala': -90        # Rojo
+            'excelente': -55,  
+            'media': -75,      
+            'mala': -90        
         }
-    
-    def calcular_distancia(self, lat1, lon1, lat2, lon2):
-        """Distancia en km usando fórmula de Haversine"""
-        R = 6371
+
+    def calcular_distancia_metros(self, lat1, lon1, lat2, lon2):
+        R = 6371000
         lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
         dlat = lat2 - lat1
         dlon = lon2 - lon1
@@ -72,110 +82,114 @@ class CoberturaBogota:
         c = 2 * np.arcsin(np.sqrt(a))
         return R * c
     
-    def calcular_perdida_trayectoria(self, distancia, frecuencia=2400, clima='despejado'):
-        """
-        Modelo de pérdida en espacio libre CORREGIDO
-        """
-        if distancia < 0.01:
-            return 2  # Pérdida mínima
-        
-        # Fórmula de pérdida en espacio libre (más realista para distancias cortas)
-        perdida = 20 * np.log10(distancia * 1000) + 20 * np.log10(frecuencia) - 147.55
-        
-        # Factor de obstáculos urbanos (Bogotá es una ciudad)
-        perdida += 8 * np.log10(distancia + 0.1)  # Atenuación urbana
-        
-        # Factor climático (suave)
-        atenuacion = self.clima.get(clima, 0.1)
-        perdida += atenuacion * distancia * 0.3
-        
-        return perdida
-    
     def calcular_intensidad_senal(self, lat, lon, clima='despejado'):
-        """Potencia de señal en dBm - CORREGIDO"""
+        """Cálculo de señal CON BLOQUEOS POR EDIFICIOS"""
         mejor_potencia = -200
+        frecuencia_mhz = 700
+        atenuacion_clima = self.clima.get(clima, 0)
         
+        # Calcular la distancia al edificio más cercano
         for torre in self.torres:
             lat_t, lon_t, pot_t = torre
-            distancia = self.calcular_distancia(lat, lon, lat_t, lon_t)
+            distancia = self.calcular_distancia_metros(lat, lon, lat_t, lon_t)
             
-            if distancia < 0.05:
-                # Muy cerca a la torre
-                potencia = pot_t - 2
-            else:
-                perdida = self.calcular_perdida_trayectoria(distancia, clima=clima)
-                potencia = pot_t - perdida
+            if distancia < 20:
+                return -120
             
-            if potencia > mejor_potencia:
-                mejor_potencia = potencia
+            # Pérdida básica
+            perdida = 20 * np.log10(distancia) + 20 * np.log10(frecuencia_mhz) - 27.55
+            senal = pot_t - perdida - atenuacion_clima
+            
+            # ==========================================
+            # 🏢 LÓGICA DE OBSTÁCULOS
+            # Si el punto está DENTRO del edificio: pierde TODA la señal
+            # Si está en la "sombra" del edificio: pierde mucha señal
+            # ==========================================
+            for obs_lat, obs_lon, obs_radio, obs_altura in self.obstaculos:
+                dist_obs = self.calcular_distancia_metros(lat, lon, obs_lat, obs_lon)
+                
+                if dist_obs < obs_radio:
+                    # Está DENTRO del edificio (Zona muerta total)
+                    senal -= (obs_altura * 1.5)  # Bloqueo total
+                elif dist_obs < obs_radio * 2.5:
+                    # Está en la sombra del edificio (Pérdida parcial)
+                    # Mientras más cerca del edificio, más pierde
+                    factor_perdida = obs_altura * (1 - (dist_obs / (obs_radio * 2.5)))
+                    senal -= factor_perdida
+            
+            if senal > mejor_potencia:
+                mejor_potencia = senal
         
-        # Limitar rango realista
-        return max(-110, min(mejor_potencia, 50))
+        return max(-120, min(mejor_potencia, 50))
     
     def obtener_color_cobertura(self, potencia):
-        """Retorna color y calidad según intensidad de señal"""
+        """Colores para mapa de emergencia (con gris para zonas muertas)"""
         if potencia >= self.umbrales['excelente']:
-            return 'green', 'Excelente'
+            return 'green', 'Excelente', 0.60  # Más opaco para emergencias
         elif potencia >= self.umbrales['media']:
-            return 'yellow', 'Media'
+            return 'yellow', 'Media', 0.70
         elif potencia >= self.umbrales['mala']:
-            return 'red', 'Mala'
+            return 'red', 'Mala', 0.75
         else:
-            return 'gray', 'Zona muerta'
+            return 'gray', 'Zona muerta', 0.85  # Gris oscuro para muerte total
     
-    def generar_mapa(self, clima='despejado', resolucion=15):
-        """Genera mapa interactivo de cobertura"""
+    def generar_mapa(self, clima='despejado', resolucion=45):
+        """Genera cuadrícula densa (no círculos gigantes) para ver edificios"""
         mapa = folium.Map(
             location=[self.lat_center, self.lon_center],
-            zoom_start=11,
+            zoom_start=12,
             tiles='OpenStreetMap'
         )
         
-        # Área de Bogotá
-        lat_range = np.linspace(4.55, 4.87, resolucion)
-        lon_range = np.linspace(-74.22, -73.92, resolucion)
-        
-        heat_data = []
+        # Densidad alta para que se vea como "pixeles" al hacer zoom
+        lat_range = np.linspace(4.60, 4.80, resolucion)
+        lon_range = np.linspace(-74.16, -73.98, resolucion)
         
         for lat in lat_range:
             for lon in lon_range:
                 potencia = self.calcular_intensidad_senal(lat, lon, clima)
-                color, calidad = self.obtener_color_cobertura(potencia)
-                
-                # Radio según potencia
-                radio = 4 + (potencia + 110) / 6
-                radio = max(3, min(radio, 12))
+                color, calidad, opacidad = self.obtener_color_cobertura(potencia)
                 
                 folium.CircleMarker(
                     location=[lat, lon],
-                    radius=radio,
+                    radius=5,  # Radio pequeño para que se vean los detalles urbanos
                     color=color,
                     fill=True,
                     fill_color=color,
-                    fill_opacity=0.8,
+                    fill_opacity=opacidad,
+                    weight=0,
                     popup=f'📍 {lat:.4f}, {lon:.4f}\n📶 Señal: {potencia:.1f} dBm\n📊 Calidad: {calidad}'
                 ).add_to(mapa)
-                
-                heat_data.append([lat, lon, potencia + 110])
         
-        # Agregar torres
+        # Dibujar torres (marcadores rojos)
         for torre in self.torres:
             lat_t, lon_t, pot_t = torre
             folium.Marker(
                 location=[lat_t, lon_t],
                 popup=f'🏗️ Torre\n📡 {pot_t} dBm',
-                icon=folium.Icon(color='red', icon='tower', prefix='fa')
+                icon=folium.Icon(color='darkred', icon='tower', prefix='fa')
             ).add_to(mapa)
         
-        # Heatmap
-        plugins.HeatMap(heat_data, radius=15, blur=10, min_opacity=0.3).add_to(mapa)
+        # Dibujar obstáculos (edificios) como círculos grises
+        for obs_lat, obs_lon, obs_radio, obs_altura in self.obstaculos:
+            # Convertir radio de metros a grados para el mapa
+            radio_aprox = obs_radio / 111320
+            folium.Circle(
+                location=[obs_lat, obs_lon],
+                radius=obs_radio,
+                color='black',
+                fill=True,
+                fill_color='black',
+                fill_opacity=0.15,
+                weight=0,
+                popup=f'🏢 Edificio (Altura: {obs_altura}m)'
+            ).add_to(mapa)
         
         return mapa
     
     def obtener_estadisticas(self, clima='despejado'):
-        """Estadísticas de cobertura - CORREGIDO"""
-        lat_range = np.linspace(4.55, 4.87, 20)
-        lon_range = np.linspace(-74.22, -73.92, 20)
+        lat_range = np.linspace(4.60, 4.80, 25)
+        lon_range = np.linspace(-74.16, -73.98, 25)
         
         potencias = []
         colores = {'green': 0, 'yellow': 0, 'red': 0, 'gray': 0}
@@ -184,7 +198,7 @@ class CoberturaBogota:
             for lon in lon_range:
                 potencia = self.calcular_intensidad_senal(lat, lon, clima)
                 potencias.append(potencia)
-                color, _ = self.obtener_color_cobertura(potencia)
+                color, _, _ = self.obtener_color_cobertura(potencia)
                 colores[color] += 1
         
         total = sum(colores.values())
@@ -193,7 +207,6 @@ class CoberturaBogota:
             'potencia_promedio': np.mean(potencias),
             'potencia_max': np.max(potencias),
             'potencia_min': np.min(potencias),
-            'potencia_std': np.std(potencias) if len(potencias) > 1 else 0,
             'cobertura_excelente': (colores['green'] / total) * 100 if total > 0 else 0,
             'cobertura_media': (colores['yellow'] / total) * 100 if total > 0 else 0,
             'cobertura_mala': (colores['red'] / total) * 100 if total > 0 else 0,
@@ -204,7 +217,6 @@ class CoberturaBogota:
 # ============================================
 # CLASE QPSK
 # ============================================
-
 class SimuladorQPSK:
     def __init__(self, num_symbols=1000):
         self.num_symbols = num_symbols
@@ -339,6 +351,8 @@ class SimuladorQPSK:
 # INTERFAZ PRINCIPAL
 # ============================================
 
+cobertura = CoberturaBogota()
+
 def main():
     st.title("📡 NEXUS SDR-LINK")
     st.subheader("Sistema de Análisis de Cobertura y Modulación QPSK")
@@ -368,12 +382,13 @@ def main():
             step=1
         )
         
+        # Resolución más alta para ver detalles urbanos al hacer zoom
         resolucion = st.slider(
             "🔍 Resolución",
-            min_value=8,
-            max_value=25,
-            value=15,
-            step=1
+            min_value=30,
+            max_value=60,
+            value=45,
+            step=5
         )
         
         st.markdown("---")
@@ -382,19 +397,16 @@ def main():
         🟢 **Excelente** (≥ -55 dBm)  
         🟡 **Media** (-75 a -55 dBm)  
         🔴 **Mala** (-90 a -75 dBm)  
-        ⬜ **Zona muerta** (< -90 dBm)
+        ⬛ **Zona muerta** (< -90 dBm)
         """)
         
         st.markdown("---")
         st.markdown("**👥 Grupo No. 7**")
         st.markdown("NEXUS SDR-LINK")
         st.markdown("Líder: Daniel Felipe Escobar R.")
-        
-        if st.button("🔄 Actualizar", type="primary", use_container_width=True):
-            st.rerun()
     
     # ============================================
-    # COLUMNAS
+    # MAPA Y ESTADÍSTICAS
     # ============================================
     
     col1, col2 = st.columns([2, 1])
@@ -402,10 +414,9 @@ def main():
     with col1:
         st.markdown("### 🗺️ Mapa de Cobertura")
         
-        with st.spinner("Generando mapa..."):
-            cobertura = CoberturaBogota()
+        with st.spinner("Calculando zonas de emergencia..."):
             mapa = cobertura.generar_mapa(clima=clima, resolucion=resolucion)
-            st_data = st_folium(mapa, width=700, height=500)
+            st_data = st_folium(mapa, width=700, height=500, key="mapa_emergencias_final")
     
     with col2:
         st.markdown("### 📊 Estadísticas")
@@ -422,7 +433,7 @@ def main():
         with col_b:
             st.metric("📈 Máxima", f"{stats['potencia_max']:.1f} dBm")
             st.metric("🟡 Media", f"{stats['cobertura_media']:.1f}%")
-            st.metric("⬜ Zona muerta", f"{stats['zonas_muertas']:.1f}%")
+            st.metric("⬛ Zona muerta", f"{stats['zonas_muertas']:.1f}%")
         
         # Gráfico de barras
         fig, ax = plt.subplots(figsize=(6, 3))
@@ -508,8 +519,8 @@ def main():
     data = []
     for lat, lon, nombre in puntos:
         potencia = cobertura.calcular_intensidad_senal(lat, lon, clima)
-        color, calidad = cobertura.obtener_color_cobertura(potencia)
-        emoji = {'green': '🟢', 'yellow': '🟡', 'red': '🔴', 'gray': '⬜'}[color]
+        color, calidad, _ = cobertura.obtener_color_cobertura(potencia)
+        emoji = {'green': '🟢', 'yellow': '🟡', 'red': '🔴', 'gray': '⬛'}[color]
         data.append({
             'Ubicación': f"{emoji} {nombre}",
             'Potencia (dBm)': f"{potencia:.1f}",
