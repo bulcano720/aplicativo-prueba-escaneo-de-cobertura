@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-NEXUS SDR-LINK - APP WEB INTERACTIVA
+NEXUS SDR-LINK - VERSIÓN CORREGIDA
 Sistema de análisis de cobertura y modulación QPSK
 Para zonas de sombra urbana en Bogotá
 """
@@ -13,7 +13,7 @@ from folium import plugins
 from streamlit_folium import st_folium
 import pandas as pd
 from datetime import datetime
-import time
+import random
 
 # Configurar página
 st.set_page_config(
@@ -24,38 +24,46 @@ st.set_page_config(
 )
 
 # ============================================
-# CLASE DE COBERTURA
+# CLASE DE COBERTURA - CORREGIDA
 # ============================================
 
 class CoberturaBogota:
     def __init__(self):
+        # Centro de Bogotá
         self.lat_center = 4.7110
         self.lon_center = -74.0721
         
+        # Torres base - CON POTENCIA SUFICIENTE
         self.torres = [
-            (4.7110, -74.0721, 30),
-            (4.6300, -74.0800, 25),
-            (4.7900, -74.0600, 28),
-            (4.7200, -74.1500, 22),
-            (4.7000, -74.0000, 26),
-            (4.6600, -74.1000, 20),
-            (4.7600, -74.0300, 24),
+            (4.7110, -74.0721, 50),   # Centro - Torre principal
+            (4.6600, -74.0900, 45),   # Sur
+            (4.7700, -74.0500, 48),   # Norte
+            (4.7200, -74.1400, 42),   # Occidente
+            (4.7000, -74.0100, 44),   # Oriente
+            (4.6700, -74.1000, 40),   # Bosa
+            (4.7500, -74.0300, 43),   # Usaquén
+            (4.6300, -74.0700, 38),   # Usme
+            (4.6900, -74.1200, 41),   # Kennedy
+            (4.7900, -74.0400, 39),   # Suba
         ]
         
+        # Factores climáticos - MUY REDUCIDOS
         self.clima = {
-            'despejado': 0.5,
-            'lluvia': 3.0,
-            'niebla': 2.0,
-            'tormenta': 5.0
+            'despejado': 0.1,
+            'lluvia': 0.8,
+            'niebla': 0.5,
+            'tormenta': 1.5
         }
         
+        # Umbrales para colores
         self.umbrales = {
-            'excelente': -60,
-            'media': -75,
-            'mala': -90
+            'excelente': -55,  # Verde
+            'media': -75,      # Amarillo
+            'mala': -90        # Rojo
         }
     
     def calcular_distancia(self, lat1, lon1, lat2, lon2):
+        """Distancia en km usando fórmula de Haversine"""
         R = 6371
         lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
         dlat = lat2 - lat1
@@ -65,33 +73,47 @@ class CoberturaBogota:
         return R * c
     
     def calcular_perdida_trayectoria(self, distancia, frecuencia=2400, clima='despejado'):
+        """
+        Modelo de pérdida en espacio libre CORREGIDO
+        """
         if distancia < 0.01:
-            return 0
-        f = frecuencia
-        hb = 30
-        hm = 1.5
-        a_hm = (1.1 * np.log10(f) - 0.7) * hm - (1.56 * np.log10(f) - 0.8)
-        perdida = 69.55 + 26.16 * np.log10(f) - 13.82 * np.log10(hb) - a_hm
-        perdida += (44.9 - 6.55 * np.log10(hb)) * np.log10(distancia * 1000)
-        atenuacion = self.clima.get(clima, 0.5)
-        perdida += atenuacion * distancia * 2
+            return 2  # Pérdida mínima
+        
+        # Fórmula de pérdida en espacio libre (más realista para distancias cortas)
+        perdida = 20 * np.log10(distancia * 1000) + 20 * np.log10(frecuencia) - 147.55
+        
+        # Factor de obstáculos urbanos (Bogotá es una ciudad)
+        perdida += 8 * np.log10(distancia + 0.1)  # Atenuación urbana
+        
+        # Factor climático (suave)
+        atenuacion = self.clima.get(clima, 0.1)
+        perdida += atenuacion * distancia * 0.3
+        
         return perdida
     
     def calcular_intensidad_senal(self, lat, lon, clima='despejado'):
-        potencia_total = -200
+        """Potencia de señal en dBm - CORREGIDO"""
+        mejor_potencia = -200
+        
         for torre in self.torres:
             lat_t, lon_t, pot_t = torre
             distancia = self.calcular_distancia(lat, lon, lat_t, lon_t)
+            
             if distancia < 0.05:
-                potencia = pot_t - 5
+                # Muy cerca a la torre
+                potencia = pot_t - 2
             else:
                 perdida = self.calcular_perdida_trayectoria(distancia, clima=clima)
                 potencia = pot_t - perdida
-            if potencia > potencia_total:
-                potencia_total = potencia
-        return max(-130, min(potencia_total, 50))
+            
+            if potencia > mejor_potencia:
+                mejor_potencia = potencia
+        
+        # Limitar rango realista
+        return max(-110, min(mejor_potencia, 50))
     
     def obtener_color_cobertura(self, potencia):
+        """Retorna color y calidad según intensidad de señal"""
         if potencia >= self.umbrales['excelente']:
             return 'green', 'Excelente'
         elif potencia >= self.umbrales['media']:
@@ -101,15 +123,17 @@ class CoberturaBogota:
         else:
             return 'gray', 'Zona muerta'
     
-    def generar_mapa(self, clima='despejado', resolucion=25):
+    def generar_mapa(self, clima='despejado', resolucion=15):
+        """Genera mapa interactivo de cobertura"""
         mapa = folium.Map(
             location=[self.lat_center, self.lon_center],
             zoom_start=11,
             tiles='OpenStreetMap'
         )
         
+        # Área de Bogotá
         lat_range = np.linspace(4.55, 4.87, resolucion)
-        lon_range = np.linspace(-74.22, -73.95, resolucion)
+        lon_range = np.linspace(-74.22, -73.92, resolucion)
         
         heat_data = []
         
@@ -118,7 +142,8 @@ class CoberturaBogota:
                 potencia = self.calcular_intensidad_senal(lat, lon, clima)
                 color, calidad = self.obtener_color_cobertura(potencia)
                 
-                radio = 5 + (potencia + 130) / 10
+                # Radio según potencia
+                radio = 4 + (potencia + 110) / 6
                 radio = max(3, min(radio, 12))
                 
                 folium.CircleMarker(
@@ -131,8 +156,9 @@ class CoberturaBogota:
                     popup=f'📍 {lat:.4f}, {lon:.4f}\n📶 Señal: {potencia:.1f} dBm\n📊 Calidad: {calidad}'
                 ).add_to(mapa)
                 
-                heat_data.append([lat, lon, potencia + 130])
+                heat_data.append([lat, lon, potencia + 110])
         
+        # Agregar torres
         for torre in self.torres:
             lat_t, lon_t, pot_t = torre
             folium.Marker(
@@ -140,23 +166,16 @@ class CoberturaBogota:
                 popup=f'🏗️ Torre\n📡 {pot_t} dBm',
                 icon=folium.Icon(color='red', icon='tower', prefix='fa')
             ).add_to(mapa)
-            
-            folium.Circle(
-                location=[lat_t, lon_t],
-                radius=3000,
-                color='blue',
-                fill=True,
-                fill_color='blue',
-                fill_opacity=0.05
-            ).add_to(mapa)
         
-        plugins.HeatMap(heat_data, radius=20, blur=15, min_opacity=0.3).add_to(mapa)
+        # Heatmap
+        plugins.HeatMap(heat_data, radius=15, blur=10, min_opacity=0.3).add_to(mapa)
         
         return mapa
     
     def obtener_estadisticas(self, clima='despejado'):
-        lat_range = np.linspace(4.55, 4.87, 25)
-        lon_range = np.linspace(-74.22, -73.95, 25)
+        """Estadísticas de cobertura - CORREGIDO"""
+        lat_range = np.linspace(4.55, 4.87, 20)
+        lon_range = np.linspace(-74.22, -73.92, 20)
         
         potencias = []
         colores = {'green': 0, 'yellow': 0, 'red': 0, 'gray': 0}
@@ -174,11 +193,11 @@ class CoberturaBogota:
             'potencia_promedio': np.mean(potencias),
             'potencia_max': np.max(potencias),
             'potencia_min': np.min(potencias),
-            'potencia_std': np.std(potencias),
-            'cobertura_excelente': (colores['green'] / total) * 100,
-            'cobertura_media': (colores['yellow'] / total) * 100,
-            'cobertura_mala': (colores['red'] / total) * 100,
-            'zonas_muertas': (colores['gray'] / total) * 100
+            'potencia_std': np.std(potencias) if len(potencias) > 1 else 0,
+            'cobertura_excelente': (colores['green'] / total) * 100 if total > 0 else 0,
+            'cobertura_media': (colores['yellow'] / total) * 100 if total > 0 else 0,
+            'cobertura_mala': (colores['red'] / total) * 100 if total > 0 else 0,
+            'zonas_muertas': (colores['gray'] / total) * 100 if total > 0 else 0
         }
 
 
@@ -187,7 +206,7 @@ class CoberturaBogota:
 # ============================================
 
 class SimuladorQPSK:
-    def __init__(self, num_symbols=2000):
+    def __init__(self, num_symbols=1000):
         self.num_symbols = num_symbols
         self.M = 4
         self.symbols = None
@@ -297,16 +316,14 @@ class SimuladorQPSK:
         ax.semilogy(resultados['snr'], resultados['ber'], 'b-o', 
                    linewidth=2, markersize=8, label='Simulado')
         
-        # Curva teórica
-        snr_teorico = np.array(resultados['snr'])
         try:
             from scipy.special import erfc
+            snr_teorico = np.array(resultados['snr'])
             ber_teorico = 0.5 * erfc(np.sqrt(10**(snr_teorico/10)))
+            ax.semilogy(snr_teorico, ber_teorico, 'r--', 
+                       linewidth=2, label='Teórico')
         except:
-            ber_teorico = 0.5 * (1 - np.erf(np.sqrt(10**(snr_teorico/10))))
-        
-        ax.semilogy(snr_teorico, ber_teorico, 'r--', 
-                   linewidth=2, label='Teórico')
+            pass
         
         ax.set_title('BER vs SNR - QPSK')
         ax.set_xlabel('SNR (dB)')
@@ -319,23 +336,21 @@ class SimuladorQPSK:
 
 
 # ============================================
-# INTERFAZ DE USUARIO CON STREAMLIT
+# INTERFAZ PRINCIPAL
 # ============================================
 
 def main():
-    # Título principal
     st.title("📡 NEXUS SDR-LINK")
     st.subheader("Sistema de Análisis de Cobertura y Modulación QPSK")
     st.caption(f"🏙️ Bogotá - Zonas de sombra urbana | {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     
-    # Barra lateral
+    # Sidebar
     with st.sidebar:
         st.image("https://img.icons8.com/color/96/000000/antenna.png", width=80)
         st.markdown("## ⚙️ Configuración")
         
-        # Selección de clima
         clima = st.selectbox(
-            "🌤️ Condiciones climáticas",
+            "🌤️ Clima",
             options=['despejado', 'lluvia', 'niebla', 'tormenta'],
             format_func=lambda x: {
                 'despejado': '☀️ Despejado',
@@ -345,31 +360,29 @@ def main():
             }[x]
         )
         
-        # SNR para QPSK
         snr_qpsk = st.slider(
-            "📡 SNR para QPSK (dB)",
+            "📡 SNR QPSK (dB)",
             min_value=0,
             max_value=25,
             value=15,
             step=1
         )
         
-        # Resolución del mapa
         resolucion = st.slider(
-            "🔍 Resolución del mapa",
-            min_value=10,
-            max_value=40,
-            value=25,
-            step=5
+            "🔍 Resolución",
+            min_value=8,
+            max_value=25,
+            value=15,
+            step=1
         )
         
         st.markdown("---")
-        st.markdown("### 📊 Información")
+        st.markdown("### 📊 Leyenda")
         st.markdown("""
-        - **Verde**: Excelente (≥ -60 dBm)
-        - **Amarillo**: Media (-75 a -60 dBm)
-        - **Rojo**: Mala (-90 a -75 dBm)
-        - **Gris**: Zona muerta (< -90 dBm)
+        🟢 **Excelente** (≥ -55 dBm)  
+        🟡 **Media** (-75 a -55 dBm)  
+        🔴 **Mala** (-90 a -75 dBm)  
+        ⬜ **Zona muerta** (< -90 dBm)
         """)
         
         st.markdown("---")
@@ -377,12 +390,11 @@ def main():
         st.markdown("NEXUS SDR-LINK")
         st.markdown("Líder: Daniel Felipe Escobar R.")
         
-        # Botón de actualizar
-        if st.button("🔄 Actualizar Análisis", type="primary"):
+        if st.button("🔄 Actualizar", type="primary", use_container_width=True):
             st.rerun()
     
     # ============================================
-    # COLUMNAS PRINCIPALES
+    # COLUMNAS
     # ============================================
     
     col1, col2 = st.columns([2, 1])
@@ -390,23 +402,20 @@ def main():
     with col1:
         st.markdown("### 🗺️ Mapa de Cobertura")
         
-        with st.spinner("Generando mapa de cobertura..."):
+        with st.spinner("Generando mapa..."):
             cobertura = CoberturaBogota()
             mapa = cobertura.generar_mapa(clima=clima, resolucion=resolucion)
-            
-            # Mostrar mapa interactivo
-            st_data = st_folium(mapa, width=700, height=550)
+            st_data = st_folium(mapa, width=700, height=500)
     
     with col2:
-        st.markdown("### 📊 Estadísticas de Cobertura")
+        st.markdown("### 📊 Estadísticas")
         
         stats = cobertura.obtener_estadisticas(clima=clima)
         
-        # Métricas en tarjetas
         col_a, col_b = st.columns(2)
         
         with col_a:
-            st.metric("📶 Potencia Promedio", f"{stats['potencia_promedio']:.1f} dBm")
+            st.metric("📶 Promedio", f"{stats['potencia_promedio']:.1f} dBm")
             st.metric("🟢 Excelente", f"{stats['cobertura_excelente']:.1f}%")
             st.metric("🔴 Mala", f"{stats['cobertura_mala']:.1f}%")
         
@@ -415,11 +424,15 @@ def main():
             st.metric("🟡 Media", f"{stats['cobertura_media']:.1f}%")
             st.metric("⬜ Zona muerta", f"{stats['zonas_muertas']:.1f}%")
         
-        # Gráfico de barras de cobertura
-        fig_stats, ax = plt.subplots(figsize=(6, 3))
+        # Gráfico de barras
+        fig, ax = plt.subplots(figsize=(6, 3))
         categorias = ['Excelente', 'Media', 'Mala', 'Zona muerta']
-        valores = [stats['cobertura_excelente'], stats['cobertura_media'], 
-                  stats['cobertura_mala'], stats['zonas_muertas']]
+        valores = [
+            stats['cobertura_excelente'],
+            stats['cobertura_media'],
+            stats['cobertura_mala'],
+            stats['zonas_muertas']
+        ]
         colores_bar = ['green', 'gold', 'red', 'gray']
         
         bars = ax.bar(categorias, valores, color=colores_bar, edgecolor='black', linewidth=1)
@@ -432,46 +445,43 @@ def main():
                    f'{val:.1f}%', ha='center', va='bottom', fontsize=9)
         
         plt.tight_layout()
-        st.pyplot(fig_stats)
+        st.pyplot(fig)
     
     # ============================================
-    # SECCIÓN QPSK
+    # QPSK
     # ============================================
     
     st.markdown("---")
-    st.markdown("### 📡 Simulación de Modulación QPSK")
+    st.markdown("### 📡 Modulación QPSK")
     
     col3, col4 = st.columns(2)
     
     with col3:
-        st.markdown("#### 📊 BER vs SNR")
+        st.markdown("#### BER vs SNR")
         
-        with st.spinner("Simulando QPSK..."):
-            qpsk = SimuladorQPSK(2000)
+        with st.spinner("Simulando..."):
+            qpsk = SimuladorQPSK(1000)
             resultados = qpsk.simular()
             
             fig_ber = qpsk.graficar_ber(resultados)
             st.pyplot(fig_ber)
             
-            # Mostrar BER para el SNR seleccionado
             if snr_qpsk in resultados['snr']:
                 idx = resultados['snr'].index(snr_qpsk)
                 ber_actual = resultados['ber'][idx]
-                
                 calidad = "✅ Excelente" if ber_actual < 1e-4 else "⚠️ Aceptable" if ber_actual < 1e-3 else "❌ Mala"
-                st.info(f"**BER para SNR={snr_qpsk} dB:** {ber_actual:.2e} - {calidad}")
+                st.info(f"**SNR={snr_qpsk} dB:** BER={ber_actual:.2e} - {calidad}")
     
     with col4:
-        st.markdown("#### 🎯 Constelación QPSK")
+        st.markdown("#### Constelación")
         
         fig_const = qpsk.graficar_constelacion(snr_qpsk)
         st.pyplot(fig_const)
         
-        # Información adicional
         st.markdown("""
-        **📝 Interpretación:**
-        - Puntos azules: Constelación ideal
-        - Puntos rojos: Señal recibida con ruido
+        **Interpretación:**
+        - 🔵 Azul: Ideal
+        - 🔴 Rojo: Con ruido
         - Menor dispersión = Mejor calidad
         """)
     
@@ -480,24 +490,23 @@ def main():
     # ============================================
     
     st.markdown("---")
-    st.markdown("### 📍 Puntos de Interés en Bogotá")
+    st.markdown("### 📍 Puntos de Interés")
     
-    puntos_interes = [
+    puntos = [
         (4.7110, -74.0721, "Centro"),
-        (4.6500, -74.0800, "Sur"),
-        (4.7700, -74.0600, "Norte"),
-        (4.7200, -74.1300, "Occidente"),
-        (4.7000, -74.0200, "Oriente"),
-        (4.6800, -74.0950, "Bosa"),
-        (4.7400, -74.0450, "Usaquén"),
-        (4.6300, -74.1100, "Kennedy"),
-        (4.8000, -74.0400, "Suba"),
-        (4.5900, -74.0700, "Usme")
+        (4.6600, -74.0900, "Sur"),
+        (4.7700, -74.0500, "Norte"),
+        (4.7200, -74.1400, "Occidente"),
+        (4.7000, -74.0100, "Oriente"),
+        (4.6700, -74.1000, "Bosa"),
+        (4.7500, -74.0300, "Usaquén"),
+        (4.6300, -74.0700, "Usme"),
+        (4.6900, -74.1200, "Kennedy"),
+        (4.7900, -74.0400, "Suba"),
     ]
     
-    # Crear DataFrame para mostrar
     data = []
-    for lat, lon, nombre in puntos_interes:
+    for lat, lon, nombre in puntos:
         potencia = cobertura.calcular_intensidad_senal(lat, lon, clima)
         color, calidad = cobertura.obtener_color_cobertura(potencia)
         emoji = {'green': '🟢', 'yellow': '🟡', 'red': '🔴', 'gray': '⬜'}[color]
@@ -510,11 +519,6 @@ def main():
     df = pd.DataFrame(data)
     st.dataframe(df, use_container_width=True, hide_index=True)
     
-    # ============================================
-    # PIE DE PÁGINA
-    # ============================================
-    
-    st.markdown("---")
     st.caption("📡 NEXUS SDR-LINK | Análisis en tiempo real | Bogotá, Colombia")
 
 
