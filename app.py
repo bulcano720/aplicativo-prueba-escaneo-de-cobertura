@@ -503,9 +503,6 @@ def main():
     st.markdown("---")
     st.markdown("### 📍 Puntos de Interés")
     
-    st.markdown("---")
-    st.markdown("### 📍 Puntos de Interés")
-    
     puntos = [
         (4.7115, -74.0715, "Centro"),   # Movido 50 metros aprox.
         (4.6605, -74.0895, "Sur"),      # Movido
