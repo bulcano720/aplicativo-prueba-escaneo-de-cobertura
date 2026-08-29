@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-NEXUS SDR-LINK - VERSIÓN DE EMERGENCIA Y ZONAS MUERTAS
+NEXUS SDR-LINK - VERSIÓN FINAL CON AUTO-REFRESCO CADA 5 MINUTOS
 Sistema de análisis de cobertura y modulación QPSK
 Para zonas de sombra urbana en Bogotá
 """
@@ -13,6 +13,11 @@ from streamlit_folium import st_folium
 import pandas as pd
 from datetime import datetime
 import math
+import random
+
+from io import BytesIO
+from PIL import Image, ImageDraw
+import hashlib
 
 # Configurar página
 st.set_page_config(
@@ -23,7 +28,7 @@ st.set_page_config(
 )
 
 # ============================================
-# CLASE DE COBERTURA (CON OBSTÁCULOS Y ZONAS MUERTAS)
+# CLASE DE COBERTURA (CORREGIDA)
 # ============================================
 class CoberturaBogota:
     def __init__(self):
@@ -44,13 +49,8 @@ class CoberturaBogota:
             (4.7900, -74.0400, 39),   # Suba
         ]
         
-        # ==========================================
-        # 🏢 OBSTÁCULOS URBANOS (Edificios que bloquean señal)
-        # Crea zonas muertas para simular escenarios de emergencia
-        # ==========================================
+        # Obstáculos urbanos (edificios)
         self.obstaculos = [
-            # (lat, lon, radio_en_metros, altura_del_edificio)
-            # Mientras más alto (altura), más zona muerta genera
             (4.7100, -74.0800, 500, 80),   # Centro financiero
             (4.6800, -74.0800, 600, 100),  # Zona Industrial
             (4.7500, -74.0600, 700, 90),   # Norte (Chicó)
@@ -81,14 +81,30 @@ class CoberturaBogota:
         a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
         c = 2 * np.arcsin(np.sqrt(a))
         return R * c
-    
-    def calcular_intensidad_senal(self, lat, lon, clima='despejado'):
-        """Cálculo de señal CON BLOQUEOS POR EDIFICIOS"""
+
+    def calcular_intensidad_senal_con_tiempo(self, lat, lon, clima='despejado', hora_actual=0):
+        # Cambiamos el divisor de 2 (horas) a 5 (minutos)
+        semilla_str = f"{clima}-{hora_actual // 5}"
+        semilla = int(hashlib.md5(semilla_str.encode()).hexdigest(), 16) % 10000
+        random.seed(semilla)
+        
+        variacion_max = 0
+        factor_degradacion = 0
+        if clima == 'despejado':
+            variacion_max = 5
+        elif clima == 'lluvia':
+            variacion_max = 10
+            factor_degradacion = 5
+        elif clima == 'niebla':
+            variacion_max = 8
+            factor_degradacion = 8
+        elif clima == 'tormenta':
+            variacion_max = 15
+            factor_degradacion = 15
+        
         mejor_potencia = -200
         frecuencia_mhz = 700
-        atenuacion_clima = self.clima.get(clima, 0)
         
-        # Calcular la distancia al edificio más cercano
         for torre in self.torres:
             lat_t, lon_t, pot_t = torre
             distancia = self.calcular_distancia_metros(lat, lon, lat_t, lon_t)
@@ -96,24 +112,36 @@ class CoberturaBogota:
             if distancia < 20:
                 return -120
             
-            # Pérdida básica
+            perdida = 20 * np.log10(distancia) + 20 * np.log10(frecuencia_mhz) - 27.55
+            senal = pot_t - perdida - factor_degradacion
+            
+            senal += random.uniform(-variacion_max, variacion_max)
+            
+            if senal > mejor_potencia:
+                mejor_potencia = senal
+        
+        return max(-120, min(mejor_potencia, 50))
+
+    def calcular_intensidad_senal(self, lat, lon, clima='despejado'):
+        mejor_potencia = -200
+        frecuencia_mhz = 700
+        atenuacion_clima = self.clima.get(clima, 0)
+        
+        for torre in self.torres:
+            lat_t, lon_t, pot_t = torre
+            distancia = self.calcular_distancia_metros(lat, lon, lat_t, lon_t)
+            
+            if distancia < 20:
+                return -120
+            
             perdida = 20 * np.log10(distancia) + 20 * np.log10(frecuencia_mhz) - 27.55
             senal = pot_t - perdida - atenuacion_clima
             
-            # ==========================================
-            # 🏢 LÓGICA DE OBSTÁCULOS
-            # Si el punto está DENTRO del edificio: pierde TODA la señal
-            # Si está en la "sombra" del edificio: pierde mucha señal
-            # ==========================================
             for obs_lat, obs_lon, obs_radio, obs_altura in self.obstaculos:
                 dist_obs = self.calcular_distancia_metros(lat, lon, obs_lat, obs_lon)
-                
                 if dist_obs < obs_radio:
-                    # Está DENTRO del edificio (Zona muerta total)
-                    senal -= (obs_altura * 1.5)  # Bloqueo total
+                    senal -= (obs_altura * 1.5)
                 elif dist_obs < obs_radio * 2.5:
-                    # Está en la sombra del edificio (Pérdida parcial)
-                    # Mientras más cerca del edificio, más pierde
                     factor_perdida = obs_altura * (1 - (dist_obs / (obs_radio * 2.5)))
                     senal -= factor_perdida
             
@@ -123,36 +151,34 @@ class CoberturaBogota:
         return max(-120, min(mejor_potencia, 50))
     
     def obtener_color_cobertura(self, potencia):
-        """Colores para mapa de emergencia (con gris para zonas muertas)"""
         if potencia >= self.umbrales['excelente']:
-            return 'green', 'Excelente', 0.60  # Más opaco para emergencias
+            return 'green', 'Excelente', 0.60
         elif potencia >= self.umbrales['media']:
             return 'yellow', 'Media', 0.70
         elif potencia >= self.umbrales['mala']:
             return 'red', 'Mala', 0.75
         else:
-            return 'gray', 'Zona muerta', 0.85  # Gris oscuro para muerte total
+            return 'gray', 'Zona muerta', 0.85
     
     def generar_mapa(self, clima='despejado', resolucion=45):
-        """Genera cuadrícula densa (no círculos gigantes) para ver edificios"""
+        """Genera el mapa. IMPORTANTE: Devuelve el mapa SIEMPRE."""
         mapa = folium.Map(
             location=[self.lat_center, self.lon_center],
             zoom_start=12,
             tiles='OpenStreetMap'
         )
         
-        # Densidad alta para que se vea como "pixeles" al hacer zoom
         lat_range = np.linspace(4.60, 4.80, resolucion)
         lon_range = np.linspace(-74.16, -73.98, resolucion)
         
         for lat in lat_range:
             for lon in lon_range:
-                potencia = self.calcular_intensidad_senal(lat, lon, clima)
+                potencia = self.calcular_intensidad_senal_con_tiempo(lat, lon, clima, datetime.now().minute)
                 color, calidad, opacidad = self.obtener_color_cobertura(potencia)
                 
                 folium.CircleMarker(
                     location=[lat, lon],
-                    radius=5,  # Radio pequeño para que se vean los detalles urbanos
+                    radius=5,
                     color=color,
                     fill=True,
                     fill_color=color,
@@ -161,7 +187,6 @@ class CoberturaBogota:
                     popup=f'📍 {lat:.4f}, {lon:.4f}\n📶 Señal: {potencia:.1f} dBm\n📊 Calidad: {calidad}'
                 ).add_to(mapa)
         
-        # Dibujar torres (marcadores rojos)
         for torre in self.torres:
             lat_t, lon_t, pot_t = torre
             folium.Marker(
@@ -170,10 +195,7 @@ class CoberturaBogota:
                 icon=folium.Icon(color='darkred', icon='tower', prefix='fa')
             ).add_to(mapa)
         
-        # Dibujar obstáculos (edificios) como círculos grises
         for obs_lat, obs_lon, obs_radio, obs_altura in self.obstaculos:
-            # Convertir radio de metros a grados para el mapa
-            radio_aprox = obs_radio / 111320
             folium.Circle(
                 location=[obs_lat, obs_lon],
                 radius=obs_radio,
@@ -188,15 +210,17 @@ class CoberturaBogota:
         return mapa
     
     def obtener_estadisticas(self, clima='despejado'):
-        lat_range = np.linspace(4.60, 4.80, 25)
-        lon_range = np.linspace(-74.16, -73.98, 25)
+        hora_actual = datetime.now().minute
+        
+        lat_range = np.linspace(4.55, 4.87, 15)
+        lon_range = np.linspace(-74.22, -73.92, 15)
         
         potencias = []
         colores = {'green': 0, 'yellow': 0, 'red': 0, 'gray': 0}
         
         for lat in lat_range:
             for lon in lon_range:
-                potencia = self.calcular_intensidad_senal(lat, lon, clima)
+                potencia = self.calcular_intensidad_senal_con_tiempo(lat, lon, clima, hora_actual)
                 potencias.append(potencia)
                 color, _, _ = self.obtener_color_cobertura(potencia)
                 colores[color] += 1
@@ -382,7 +406,6 @@ def main():
             step=1
         )
         
-        # Resolución más alta para ver detalles urbanos al hacer zoom
         resolucion = st.slider(
             "🔍 Resolución",
             min_value=30,
@@ -390,6 +413,17 @@ def main():
             value=45,
             step=5
         )
+        
+        hora_actual = datetime.now().hour
+        minuto_actual = datetime.now().minute
+        
+        # ⏰ TEMPORIZADOR Y CAMBIO CADA 5 MINUTOS
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=300000, key="auto_refresh_5min")  # 300,000 ms = 5 minutos
+        
+        bloque_5min = (minuto_actual // 5) * 5
+        st.sidebar.info(f"🕒 **Hora actual:** {hora_actual}:{minuto_actual:02d}\n"
+                        f"🔄 **Próximo cambio automático en:** {bloque_5min + 5 - minuto_actual} minuto(s)")
         
         st.markdown("---")
         st.markdown("### 📊 Leyenda")
@@ -461,6 +495,126 @@ def main():
         st.pyplot(fig)
     
     # ============================================
+    # CAPTURA DEL MOMENTO (DOBLE ARCHIVO - DEFINITIVA)
+    # ============================================
+    st.markdown("---")
+    st.markdown("### 📸 Captura del Momento (Anterior vs Reciente)")
+
+    import json
+    import os
+
+    def generar_imagen_informe(titulo, fecha_mostrar, clima_mostrar, stats_mostrar):
+        img = Image.new('RGB', (600, 400), color=(24, 24, 24))
+        d = ImageDraw.Draw(img)
+        blanco = (255, 255, 255)
+        verde = (0, 255, 0)
+        amarillo = (255, 255, 0)
+        rojo = (255, 0, 0)
+
+        d.text((20, 20), titulo, fill=blanco)
+        d.text((20, 60), f"Fecha: {fecha_mostrar}", fill=blanco)
+        d.text((20, 90), f"Clima actual: {clima_mostrar}", fill=blanco)
+        d.text((20, 130), f"Potencia Promedio: {stats_mostrar['potencia_promedio']:.1f} dBm", fill=blanco)
+        d.text((20, 160), f"Potencia Máxima: {stats_mostrar['potencia_max']:.1f} dBm", fill=blanco)
+        d.text((20, 200), f"Cobertura Excelente: {stats_mostrar['cobertura_excelente']:.1f}%", fill=verde)
+        d.text((20, 230), f"Cobertura Media: {stats_mostrar['cobertura_media']:.1f}%", fill=amarillo)
+        d.text((20, 260), f"Cobertura Mala: {stats_mostrar['cobertura_mala']:.1f}%", fill=rojo)
+        d.text((20, 290), f"Zonas Muertas: {stats_mostrar['zonas_muertas']:.1f}%", fill=(128, 128, 128))
+        d.text((20, 340), "Grupo No. 7 - NEXUS SDR-LINK", fill=blanco)
+        d.text((20, 370), "Líder: Daniel Felipe Escobar R.", fill=blanco)
+
+        return img
+
+    # ⏰ Calcular bloque de 5 minutos
+    minuto_actual = datetime.now().minute
+    bloque_actual = minuto_actual // 5
+
+    # 📁 Archivos de guardado
+    archivo_actual = "captura_actual.json"
+    archivo_anterior = "captura_anterior.json"
+
+    # 1. Leer lo que hay en el archivo "actual" (que será el "anterior" para esta ejecución)
+    datos_previos = None
+    if os.path.exists(archivo_actual):
+        try:
+            with open(archivo_actual, encoding='utf-8') as f:
+                datos_previos = json.load(f)
+        except:
+            datos_previos = None
+
+    # 2. Si en el archivo "actual" había datos de un bloque distinto, 
+    #    los movemos al archivo "anterior" (para mostrarlos en la izquierda)
+    if datos_previos is not None and datos_previos.get('bloque') != bloque_actual:
+        with open(archivo_anterior, 'w', encoding='utf-8') as f:
+            json.dump(datos_previos, f)
+
+    # 3. Leer el archivo "anterior" para mostrar en la izquierda
+    datos_anteriores = None
+    if os.path.exists(archivo_anterior):
+        try:
+            with open(archivo_anterior, encoding='utf-8') as f:
+                datos_anteriores = json.load(f)
+        except:
+            datos_anteriores = None
+
+    # 4. Mostrar en dos columnas
+    cap_col1, cap_col2 = st.columns(2)
+
+    with cap_col1:
+        st.markdown("#### 🕒 Captura Anterior")
+        if datos_anteriores is not None and datos_anteriores.get('bloque') != bloque_actual:
+            img_anterior = generar_imagen_informe(
+                "NEXUS SDR-LINK - INFORME ANTERIOR",
+                datos_anteriores['fecha'],
+                datos_anteriores['clima'],
+                datos_anteriores['stats']
+            )
+            st.image(img_anterior, use_container_width=True)
+        else:
+            st.info("Aún no hay datos anteriores. Esta es la primera carga.")
+
+    with cap_col2:
+        st.markdown("#### 🕐 Captura Reciente (Actual)")
+        fecha_actual = datetime.now().strftime('%d/%m/%Y %H:%M')
+        img_actual = generar_imagen_informe(
+            "NEXUS SDR-LINK - INFORME RECIENTE",
+            fecha_actual,
+            clima,
+            stats
+        )
+        st.image(img_actual, use_container_width=True)
+
+        buf = BytesIO()
+        img_actual.save(buf, format="PNG")
+        byte_im = buf.getvalue()
+        st.download_button(
+            label="📥 Descargar Captura Reciente (PNG)",
+            data=byte_im,
+            file_name=f"captura_reciente_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
+            mime="image/png"
+        )
+
+    # 5. Guardar los datos actuales en el archivo "actual" para el próximo ciclo
+    datos_a_guardar = {
+        "bloque": bloque_actual,
+        "fecha": fecha_actual,
+        "clima": clima,
+        "stats": {
+            "potencia_promedio": stats['potencia_promedio'],
+            "potencia_max": stats['potencia_max'],
+            "cobertura_excelente": stats['cobertura_excelente'],
+            "cobertura_media": stats['cobertura_media'],
+            "cobertura_mala": stats['cobertura_mala'],
+            "zonas_muertas": stats['zonas_muertas']
+        }
+    }
+    try:
+        with open(archivo_actual, 'w', encoding='utf-8') as f:
+            json.dump(datos_a_guardar, f)
+    except Exception as e:
+        pass
+    
+    # ============================================
     # QPSK
     # ============================================
     
@@ -506,21 +660,21 @@ def main():
     st.markdown("### 📍 Puntos de Interés")
     
     puntos = [
-        (4.7115, -74.0715, "Centro"),   # Movido 50 metros aprox.
-        (4.6605, -74.0895, "Sur"),      # Movido
-        (4.7705, -74.0495, "Norte"),    # Movido
-        (4.7205, -74.1395, "Occidente"),# Movido
-        (4.7005, -74.0105, "Oriente"),  # Movido
-        (4.6705, -74.0995, "Bosa"),     # Movido
-        (4.7505, -74.0305, "Usaquén"),  # Movido
-        (4.6305, -74.0695, "Usme"),     # Movido
-        (4.6905, -74.1195, "Kennedy"),  # Movido
-        (4.7905, -74.0405, "Suba"),     # Movido
+        (4.7115, -74.0715, "Centro"),
+        (4.6605, -74.0895, "Sur"),
+        (4.7705, -74.0495, "Norte"),
+        (4.7205, -74.1395, "Occidente"),
+        (4.7005, -74.0105, "Oriente"),
+        (4.6705, -74.0995, "Bosa"),
+        (4.7505, -74.0305, "Usaquén"),
+        (4.6305, -74.0695, "Usme"),
+        (4.6905, -74.1195, "Kennedy"),
+        (4.7905, -74.0405, "Suba"),
     ]
     
     data = []
     for lat, lon, nombre in puntos:
-        potencia = cobertura.calcular_intensidad_senal(lat, lon, clima)
+        potencia = cobertura.calcular_intensidad_senal_con_tiempo(lat, lon, clima, minuto_actual)
         color, calidad, _ = cobertura.obtener_color_cobertura(potencia)
         emoji = {'green': '🟢', 'yellow': '🟡', 'red': '🔴', 'gray': '⬜'}[color]
         data.append({
@@ -536,4 +690,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        st.stop()
