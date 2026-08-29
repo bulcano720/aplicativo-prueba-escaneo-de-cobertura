@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-NEXUS SDR-LINK - VERSIÓN FINAL CON AUTO-REFRESCO CADA 5 MINUTOS
+NEXUS SDR-LINK - VERSIÓN FINAL CON HORA DE BOGOTÁ
 Sistema de análisis de cobertura y modulación QPSK
 Para zonas de sombra urbana en Bogotá
 """
@@ -27,6 +27,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Zona horaria de Colombia
+zona_bogota = pytz.timezone('America/Bogota')
 
 # ============================================
 # CLASE DE COBERTURA (CORREGIDA)
@@ -84,7 +87,6 @@ class CoberturaBogota:
         return R * c
 
     def calcular_intensidad_senal_con_tiempo(self, lat, lon, clima='despejado', hora_actual=0):
-        # Cambiamos el divisor de 2 (horas) a 5 (minutos)
         semilla_str = f"{clima}-{hora_actual // 5}"
         semilla = int(hashlib.md5(semilla_str.encode()).hexdigest(), 16) % 10000
         random.seed(semilla)
@@ -174,7 +176,8 @@ class CoberturaBogota:
         
         for lat in lat_range:
             for lon in lon_range:
-                potencia = self.calcular_intensidad_senal_con_tiempo(lat, lon, clima, datetime.now().minute)
+                # CAMBIADO: Usa hora de Bogotá
+                potencia = self.calcular_intensidad_senal_con_tiempo(lat, lon, clima, datetime.now(zona_bogota).minute)
                 color, calidad, opacidad = self.obtener_color_cobertura(potencia)
                 
                 folium.CircleMarker(
@@ -211,7 +214,8 @@ class CoberturaBogota:
         return mapa
     
     def obtener_estadisticas(self, clima='despejado'):
-        hora_actual = datetime.now().minute
+        # CAMBIADO: Usa hora de Bogotá
+        hora_actual = datetime.now(zona_bogota).minute
         
         lat_range = np.linspace(4.55, 4.87, 15)
         lon_range = np.linspace(-74.22, -73.92, 15)
@@ -381,7 +385,9 @@ cobertura = CoberturaBogota()
 def main():
     st.title("📡 NEXUS SDR-LINK")
     st.subheader("Sistema de Análisis de Cobertura y Modulación QPSK")
-    st.caption(f"🏙️ Bogotá - Zonas de sombra urbana | {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    
+    # CAMBIADO: Usa hora de Bogotá para el título
+    st.caption(f"🏙️ Bogotá - Zonas de sombra urbana | {datetime.now(zona_bogota).strftime('%d/%m/%Y %H:%M')}")
     
     # Sidebar
     with st.sidebar:
@@ -415,8 +421,9 @@ def main():
             step=5
         )
         
-        hora_actual = datetime.now().hour
-        minuto_actual = datetime.now().minute
+        # CAMBIADO: Usa hora de Bogotá
+        hora_actual = datetime.now(zona_bogota).hour
+        minuto_actual = datetime.now(zona_bogota).minute
         
         # ⏰ TEMPORIZADOR Y CAMBIO CADA 5 MINUTOS
         from streamlit_autorefresh import st_autorefresh
@@ -527,7 +534,8 @@ def main():
         return img
 
     # ⏰ Calcular bloque de 5 minutos
-    minuto_actual = datetime.now().minute
+    # CAMBIADO: Usa hora de Bogotá
+    minuto_actual = datetime.now(zona_bogota).minute
     bloque_actual = minuto_actual // 5
 
     # 📁 Archivos de guardado
@@ -576,7 +584,8 @@ def main():
 
     with cap_col2:
         st.markdown("#### 🕐 Captura Reciente (Actual)")
-        fecha_actual = datetime.now().strftime('%d/%m/%Y %H:%M')
+        # CAMBIADO: Usa hora de Bogotá
+        fecha_actual = datetime.now(zona_bogota).strftime('%d/%m/%Y %H:%M')
         img_actual = generar_imagen_informe(
             "NEXUS SDR-LINK - INFORME RECIENTE",
             fecha_actual,
@@ -591,7 +600,7 @@ def main():
         st.download_button(
             label="📥 Descargar Captura Reciente (PNG)",
             data=byte_im,
-            file_name=f"captura_reciente_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
+            file_name=f"captura_reciente_{datetime.now(zona_bogota).strftime('%Y%m%d_%H%M')}.png",
             mime="image/png"
         )
 
@@ -675,6 +684,7 @@ def main():
     
     data = []
     for lat, lon, nombre in puntos:
+        # CAMBIADO: Usa hora de Bogotá
         potencia = cobertura.calcular_intensidad_senal_con_tiempo(lat, lon, clima, minuto_actual)
         color, calidad, _ = cobertura.obtener_color_cobertura(potencia)
         emoji = {'green': '🟢', 'yellow': '🟡', 'red': '🔴', 'gray': '⬜'}[color]
